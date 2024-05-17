@@ -28,8 +28,9 @@ func NewNode(network cardano.Network, projectID string) cardano.Node {
 	case cardano.Testnet:
 		server = blockfrost.CardanoTestNet
 	case cardano.Preprod:
-		// We hardcode the preprod url here until blockfrost supports Preprod type.
-		server = "https://cardano-preprod.blockfrost.io/api/v0"
+		server = blockfrost.CardanoPreProd
+	case cardano.Preview:
+		server = blockfrost.CardanoPreview
 	}
 
 	return &BlockfrostNode{

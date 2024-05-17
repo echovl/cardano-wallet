@@ -1,6 +1,7 @@
 package cardano
 
 import (
+	"crypto/rand"
 	"fmt"
 	"math"
 
@@ -134,6 +135,16 @@ func (tb *TxBuilder) MinCoinsForTxOut(txOut *TxOutput) Coin {
 	return Coin(utxoEntrySizeWithoutVal+size) * tb.protocol.CoinsPerUTXOWord
 }
 
+func (tb *TxBuilder) MinCoinsForTxOutBabbage(txOut *TxOutput) Coin {
+	mTxOut, err := txOut.MarshalCBOR()
+	if err != nil {
+		fmt.Printf("error marshalling txOut: %v", err)
+		return tb.MinCoinsForTxOut(txOut)
+	}
+
+	return Coin(len(mTxOut))
+}
+
 // Calculate minimum lovelace a transaction output needs to hold post alonzo.
 // This implementation is copied from the origianl Haskell implementation:
 // https://github.com/input-output-hk/cardano-ledger/blob/eb053066c1d3bb51fb05978eeeab88afc0b049b2/eras/babbage/impl/src/Cardano/Ledger/Babbage/Rules/Utxo.hs#L242-L265
@@ -194,17 +205,62 @@ func (tb *TxBuilder) Build() (*Tx, error) {
 	return tb.tx, nil
 }
 
-func (tb *TxBuilder) addChangeIfNeeded(inputAmount, outputAmount *Value) error {
-	// Temporary fee to serialize a valid transaction
-	tb.tx.Body.Fee = 2e5
-
-	// TODO: We should build a fake tx with hardcoded data like signatures, hashes, etc
-	if err := tb.build(); err != nil {
-		return err
+func (tb *TxBuilder) addFakeWitnesses(n int) error {
+	fakeSig := make([]byte, 64)
+	// Read 64 random bytes into the slice
+	_, err := rand.Read(fakeSig)
+	if err != nil {
+		return fmt.Errorf("error generating random bytes: %v", err)
 	}
 
-	minFee := tb.calculateMinFee()
-	outputAmount = outputAmount.Add(NewValue(minFee))
+	fakeVKey := make([]byte, 32)
+	// Read 32 random bytes into the slice
+	_, err = rand.Read(fakeVKey)
+	if err != nil {
+		return fmt.Errorf("error generating random bytes: %v", err)
+	}
+
+	witnesses := make([]VKeyWitness, n)
+	for i := 0; i < n; i++ {
+		witnesses[i] = VKeyWitness{
+			VKey:      fakeVKey,
+			Signature: fakeSig,
+		}
+	}
+	tb.tx.WitnessSet.VKeyWitnessSet = witnesses
+
+	return nil
+}
+
+func (tb *TxBuilder) addChangeIfNeeded(inputAmount, outputAmount *Value) error {
+	// Temporary fee to serialize a valid transaction
+	if len(tb.pkeys) == 0 {
+		if err := tb.addFakeWitnesses(1); err != nil {
+			return err
+		}
+	} else {
+		if err := tb.build(); err != nil {
+			return err
+		}
+	}
+
+	var expectedFee Coin
+	if tb.tx.Body.Fee == 0 {
+
+		tb.tx.Body.Fee = 2e5
+		expectedFee = tb.calculateMinFee()
+
+	} else {
+		expectedFee = tb.tx.Body.Fee
+
+		minFee := tb.calculateMinFee()
+
+		if minFee > expectedFee {
+			expectedFee = minFee
+		}
+	}
+
+	outputAmount = outputAmount.Add(NewValue(expectedFee))
 
 	if inputOutputCmp := inputAmount.Cmp(outputAmount); inputOutputCmp == -1 || inputOutputCmp == 2 {
 		return fmt.Errorf(
@@ -213,7 +269,7 @@ func (tb *TxBuilder) addChangeIfNeeded(inputAmount, outputAmount *Value) error {
 			outputAmount,
 		)
 	} else if inputOutputCmp == 0 {
-		tb.tx.Body.Fee = minFee
+		tb.tx.Body.Fee = expectedFee
 		return nil
 	}
 
@@ -221,10 +277,10 @@ func (tb *TxBuilder) addChangeIfNeeded(inputAmount, outputAmount *Value) error {
 	changeAmount := inputAmount.Sub(outputAmount)
 	changeOutput := NewTxOutput(*tb.changeReceiver, changeAmount)
 
-	changeMinCoins := tb.MinCoinsForTxOut(changeOutput)
+	changeMinCoins := tb.MinCoinsForTxOutBabbage(changeOutput)
 	if changeAmount.Coin < changeMinCoins {
 		if changeAmount.OnlyCoin() {
-			tb.tx.Body.Fee = minFee + changeAmount.Coin // burn change
+			tb.tx.Body.Fee = expectedFee + changeAmount.Coin // burn change
 			return nil
 		}
 		return fmt.Errorf(
@@ -237,21 +293,25 @@ func (tb *TxBuilder) addChangeIfNeeded(inputAmount, outputAmount *Value) error {
 	tb.tx.Body.Outputs = append([]*TxOutput{changeOutput}, tb.tx.Body.Outputs...)
 
 	newMinFee := tb.calculateMinFee()
-	changeAmount.Coin = changeAmount.Coin + minFee - newMinFee
-	if changeAmount.Coin < changeMinCoins {
-		if changeAmount.OnlyCoin() {
-			tb.tx.Body.Fee = newMinFee + changeAmount.Coin // burn change
-			tb.tx.Body.Outputs = tb.tx.Body.Outputs[1:]    // remove change output
-			return nil
+	if newMinFee > expectedFee {
+		changeAmount.Coin = changeAmount.Coin + expectedFee - newMinFee
+		if changeAmount.Coin < changeMinCoins {
+			if changeAmount.OnlyCoin() {
+				tb.tx.Body.Fee = newMinFee + changeAmount.Coin // burn change
+				tb.tx.Body.Outputs = tb.tx.Body.Outputs[1:]    // remove change output
+				return nil
+			}
+			return fmt.Errorf(
+				"insuficient input for change output with multiassets, got %v want %v",
+				inputAmount.Coin,
+				changeMinCoins,
+			)
 		}
-		return fmt.Errorf(
-			"insuficient input for change output with multiassets, got %v want %v",
-			inputAmount.Coin,
-			changeMinCoins,
-		)
+		tb.tx.Body.Fee = newMinFee
+		return nil
 	}
 
-	tb.tx.Body.Fee = newMinFee
+	tb.tx.Body.Fee = expectedFee
 
 	return nil
 }

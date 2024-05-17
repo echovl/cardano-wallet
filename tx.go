@@ -116,6 +116,11 @@ func (t TxOutput) String() string {
 	return fmt.Sprintf("{Address: %v, Amount: %v}", t.Address, t.Amount)
 }
 
+func (t TxOutput) MarshalCBOR() ([]byte, error) {
+	type rawTxOutput TxOutput
+	return cborEnc.Marshal(rawTxOutput(t))
+}
+
 type TxBody struct {
 	Inputs  []*TxInput  `cbor:"0,keyasint"`
 	Outputs []*TxOutput `cbor:"1,keyasint"`

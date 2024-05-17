@@ -15,6 +15,7 @@ const (
 	Testnet Network = 0
 	Mainnet Network = 1
 	Preprod Network = 2
+	Preview Network = 3
 )
 
 // String implements Stringer.
@@ -26,6 +27,8 @@ func (n Network) String() string {
 		return "mainnet"
 	case Preprod:
 		return "preprod"
+	case Preview:
+		return "preview"
 	default:
 		return "testnet"
 	}
@@ -142,10 +145,11 @@ func (v *Value) Sub(rhs *Value) *Value {
 }
 
 // Compares two Values and returns
-//      -1 if v < rhs
-//       0 if v == rhs
-//       1 if v > rhs
-//       2 if not comparable
+//
+//	-1 if v < rhs
+//	 0 if v == rhs
+//	 1 if v > rhs
+//	 2 if not comparable
 func (v *Value) Cmp(rhs *Value) int {
 	lrZero := v.Sub(rhs).IsZero()
 	rlZero := rhs.Sub(v).IsZero()
